@@ -17,6 +17,7 @@ public class User {
     private String userNo;
     private String username;
     private String mobile;
+    private String walletAddress;
     private String passwordHash;
     private String inviteCode;
     private Long parentId;

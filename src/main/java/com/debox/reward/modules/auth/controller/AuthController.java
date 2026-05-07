@@ -6,9 +6,13 @@ import com.debox.reward.common.exception.BizException;
 import com.debox.reward.modules.auth.dto.LoginRequest;
 import com.debox.reward.modules.auth.dto.LoginResponse;
 import com.debox.reward.modules.auth.dto.NonceResponse;
+import com.debox.reward.modules.auth.dto.WalletLoginRequest;
+import com.debox.reward.modules.auth.eth.EthereumPersonalSignVerifier;
+import com.debox.reward.modules.auth.eth.WalletLoginMessage;
 import com.debox.reward.modules.auth.security.JwtService;
 import com.debox.reward.modules.user.entity.User;
 import com.debox.reward.modules.user.mapper.UserMapper;
+import com.debox.reward.modules.user.service.UserService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -30,6 +34,7 @@ import java.util.UUID;
 public class AuthController {
 
     private final UserMapper userMapper;
+    private final UserService userService;
     private final JwtService jwtService;
     private final StringRedisTemplate stringRedisTemplate;
 
@@ -67,6 +72,50 @@ public class AuthController {
         if (!matchesPassword(request.getPassword(), stored)) {
             throw new BizException("用户名或密码错误");
         }
+
+        String token = jwtService.generate(Map.of(
+                "userId", user.getId(),
+                "role", user.getRole().name()
+        ));
+
+        LoginResponse resp = new LoginResponse();
+        resp.setToken(token);
+        resp.setUserId(user.getId());
+        resp.setRole(user.getRole().name());
+        return Result.ok(resp);
+    }
+
+    @PostMapping("/login/wallet")
+    public Result<LoginResponse> loginWallet(@Valid @RequestBody WalletLoginRequest request) {
+        String normalized = EthereumPersonalSignVerifier.normalizeAddress(request.getWalletAddress());
+        if (!EthereumPersonalSignVerifier.looksLikeEvmAddress(normalized)) {
+            throw new BizException("钱包地址格式无效");
+        }
+
+        String key = "auth:nonce:" + request.getNonce().trim();
+        String bound = stringRedisTemplate.opsForValue().get(key);
+        if (bound == null) {
+            throw new BizException("nonce 无效或已过期");
+        }
+        if (!bound.isBlank()) {
+            String boundNorm = EthereumPersonalSignVerifier.normalizeAddress(bound);
+            if (!normalized.equalsIgnoreCase(boundNorm)) {
+                throw new BizException("钱包地址与 nonce 绑定不一致");
+            }
+        }
+
+        String messageUtf8 = WalletLoginMessage.build(request.getNonce().trim(), normalized);
+        try {
+            if (!EthereumPersonalSignVerifier.isValidSigner(messageUtf8, request.getSignature(), normalized)) {
+                throw new BizException("签名验证失败");
+            }
+        } catch (IllegalArgumentException e) {
+            throw new BizException("签名格式错误或无法恢复公钥");
+        }
+
+        stringRedisTemplate.delete(key);
+
+        User user = userService.findOrCreateForWalletLogin(normalized);
 
         String token = jwtService.generate(Map.of(
                 "userId", user.getId(),

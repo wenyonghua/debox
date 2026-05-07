@@ -7,12 +7,14 @@ CREATE TABLE IF NOT EXISTS sys_user (
     username VARCHAR(64) NOT NULL UNIQUE,
     mobile VARCHAR(32) NULL,
     password_hash VARCHAR(255) NULL,
+    wallet_address VARCHAR(66) NULL COMMENT 'EVM address 0x.. lower',
     invite_code VARCHAR(32) NOT NULL UNIQUE,
     parent_id BIGINT NULL,
     role VARCHAR(32) NOT NULL,
     status TINYINT NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
+    UNIQUE KEY uk_wallet_address (wallet_address),
     INDEX idx_parent_id (parent_id),
     INDEX idx_invite_code (invite_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
@@ -188,6 +190,65 @@ CREATE TABLE IF NOT EXISTS retry_task (
     INDEX idx_order (order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='失败重试任务';
 
+CREATE TABLE IF NOT EXISTS wallet_deposit (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    asset_code VARCHAR(32) NOT NULL,
+    amount DECIMAL(36,18) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    tx_hash VARCHAR(128) NULL,
+    from_address VARCHAR(66) NULL,
+    remark VARCHAR(255) NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    INDEX idx_user (user_id),
+    INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='充值记录';
+
+CREATE TABLE IF NOT EXISTS wallet_withdrawal (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    biz_no VARCHAR(64) NOT NULL UNIQUE,
+    user_id BIGINT NOT NULL,
+    asset_code VARCHAR(32) NOT NULL,
+    amount DECIMAL(36,18) NOT NULL,
+    to_address VARCHAR(66) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    executed_biz_no VARCHAR(128) NULL,
+    failure_reason VARCHAR(512) NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    INDEX idx_user_status (user_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='提现申请';
+
+CREATE TABLE IF NOT EXISTS buyback_pool (
+    id TINYINT PRIMARY KEY COMMENT 'singleton 1',
+    asset_code VARCHAR(32) NOT NULL,
+    balance DECIMAL(36,18) NOT NULL DEFAULT 0,
+    updated_at DATETIME NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='回购池（记账）';
+
+CREATE TABLE IF NOT EXISTS buyback_execution (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    biz_no VARCHAR(64) NOT NULL UNIQUE,
+    amount_usdt DECIMAL(36,18) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    swap_tx_hash VARCHAR(128) NULL,
+    burn_tx_hash VARCHAR(128) NULL,
+    remark VARCHAR(512) NULL,
+    created_at DATETIME NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='回购执行记录（链上占位）';
+
+CREATE TABLE IF NOT EXISTS user_notification (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    title VARCHAR(128) NOT NULL,
+    body VARCHAR(1024) NULL,
+    type VARCHAR(32) NULL,
+    read_flag TINYINT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL,
+    INDEX idx_user_read (user_id, read_flag)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站内通知';
+
 CREATE TABLE IF NOT EXISTS compensation_order (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     biz_no VARCHAR(64) NOT NULL UNIQUE,
@@ -220,3 +281,6 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
     INDEX idx_target (target_type, target_id),
     INDEX idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='管理员操作审计日志';
+
+INSERT IGNORE INTO buyback_pool (id, asset_code, balance, updated_at)
+VALUES (1, 'USDT', 0, NOW());

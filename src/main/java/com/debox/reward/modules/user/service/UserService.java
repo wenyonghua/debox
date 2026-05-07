@@ -10,4 +10,11 @@ public interface UserService extends IService<User> {
 
     /** 绑定邀请人（仅能绑定一次） */
     void bindReferrer(Long userId, String inviteCode);
+
+    /**
+     * 钱包登录：按链上地址查找；不存在则建档并初始化钱包账户。
+     *
+     * @param normalizedWalletAddress {@link com.debox.reward.modules.auth.eth.EthereumPersonalSignVerifier#normalizeAddress}
+     */
+    User findOrCreateForWalletLogin(String normalizedWalletAddress);
 }

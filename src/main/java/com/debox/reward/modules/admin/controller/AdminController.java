@@ -2,9 +2,12 @@ package com.debox.reward.modules.admin.controller;
 
 import com.debox.reward.common.api.Result;
 import com.debox.reward.common.exception.BizException;
+import com.debox.reward.modules.buyback.entity.BuybackExecution;
+import com.debox.reward.modules.buyback.service.BuybackExecutionAdminService;
 import com.debox.reward.modules.activity.entity.ActivityIssue;
 import com.debox.reward.modules.activity.service.ActivityIssueService;
 import com.debox.reward.modules.activity.service.ActivityOrderService;
+import com.debox.reward.modules.admin.dto.AdminBuybackExecuteRequest;
 import com.debox.reward.modules.admin.dto.AdminCreateSnapshotRequest;
 import com.debox.reward.modules.admin.dto.AdminDrawRequest;
 import com.debox.reward.modules.admin.dto.AdminFreezeUserRequest;
@@ -42,6 +45,7 @@ public class AdminController {
     private final AdminAuditLogService adminAuditLogService;
     private final WalletLedgerService walletLedgerService;
     private final FundReleaseService fundReleaseService;
+    private final BuybackExecutionAdminService buybackExecutionAdminService;
 
     @PostMapping("/rules/snapshots")
     public Result<RuleSnapshot> createSnapshot(@Valid @RequestBody AdminCreateSnapshotRequest request) {
@@ -138,6 +142,16 @@ public class AdminController {
                 "{\"asset\":\"" + request.getAssetCode() + "\",\"direction\":\"" + request.getDirection()
                         + "\",\"amount\":\"" + request.getAmount() + "\",\"bizNo\":\"" + bizNo + "\"}");
         return Result.ok(null);
+    }
+
+    @PostMapping("/buyback/execute-stub")
+    public Result<BuybackExecution> buybackExecuteStub(@Valid @RequestBody AdminBuybackExecuteRequest request) {
+        String remark = request.getRemark() == null ? "" : request.getRemark();
+        BuybackExecution ex = buybackExecutionAdminService.executeStub(request.getAmountUsdt(), remark);
+        adminAuditLogService.log("BUYBACK_EXECUTE_STUB", "buyback_execution", String.valueOf(ex.getId()),
+                null,
+                "{\"bizNo\":\"" + ex.getBizNo() + "\",\"amountUsdt\":\"" + ex.getAmountUsdt() + "\"}");
+        return Result.ok(ex);
     }
 
     @PostMapping("/fund/release/retry")

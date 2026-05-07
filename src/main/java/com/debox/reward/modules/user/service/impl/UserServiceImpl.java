@@ -76,6 +76,55 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public User findOrCreateForWalletLogin(String normalizedWalletAddress) {
+        User byWallet = userMapper.selectOne(Wrappers.<User>lambdaQuery()
+                .eq(User::getWalletAddress, normalizedWalletAddress));
+        if (byWallet != null) {
+            if (byWallet.getStatus() != null && byWallet.getStatus() != 1) {
+                throw new BizException("账号已冻结");
+            }
+            return byWallet;
+        }
+        User byUsername = userMapper.selectOne(Wrappers.<User>lambdaQuery()
+                .eq(User::getUsername, normalizedWalletAddress));
+        if (byUsername != null) {
+            if (byUsername.getStatus() != null && byUsername.getStatus() != 1) {
+                throw new BizException("账号已冻结");
+            }
+            byUsername.setWalletAddress(normalizedWalletAddress);
+            byUsername.setUpdatedAt(LocalDateTime.now());
+            userMapper.updateById(byUsername);
+            return byUsername;
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        User user = new User();
+        user.setUserNo("U" + System.currentTimeMillis());
+        user.setUsername(normalizedWalletAddress);
+        user.setWalletAddress(normalizedWalletAddress);
+        user.setPasswordHash(null);
+        user.setInviteCode(UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase());
+        user.setParentId(null);
+        user.setRole(UserRole.MEMBER);
+        user.setStatus(1);
+        user.setCreatedAt(now);
+        user.setUpdatedAt(now);
+        userMapper.insert(user);
+
+        UserInviteRelation relation = new UserInviteRelation();
+        relation.setUserId(user.getId());
+        relation.setParentId(null);
+        relation.setDepth(0);
+        relation.setPath(String.valueOf(user.getId()));
+        relation.setCreatedAt(now);
+        relationMapper.insert(relation);
+
+        walletAccountService.createDefaultAccounts(user.getId());
+        return user;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public void bindReferrer(Long userId, String inviteCode) {
         if (inviteCode == null || inviteCode.isBlank()) {
             throw new BizException("邀请码不能为空");
