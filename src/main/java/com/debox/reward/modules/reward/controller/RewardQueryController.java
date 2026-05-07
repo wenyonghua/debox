@@ -1,6 +1,8 @@
 package com.debox.reward.modules.reward.controller;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.debox.reward.common.api.PageResult;
 import com.debox.reward.common.api.Result;
 import com.debox.reward.modules.reward.dto.RewardSummaryResponse;
 import com.debox.reward.modules.reward.entity.RewardAllocation;
@@ -22,13 +24,20 @@ public class RewardQueryController {
     private final RewardAllocationService rewardAllocationService;
 
     @GetMapping("/records")
-    public Result<List<RewardAllocation>> records(@RequestParam Long userId,
-                                                  @RequestParam(defaultValue = "100") int limit) {
-        int l = Math.max(1, Math.min(200, limit));
-        return Result.ok(rewardAllocationService.list(Wrappers.<RewardAllocation>lambdaQuery()
+    public Result<PageResult<RewardAllocation>> records(@RequestParam Long userId,
+                                                        @RequestParam(defaultValue = "1") long page,
+                                                        @RequestParam(defaultValue = "20") long size) {
+        long p = Math.max(1, page);
+        long s = Math.max(1, Math.min(200, size));
+        Page<RewardAllocation> pg = rewardAllocationService.page(new Page<>(p, s), Wrappers.<RewardAllocation>lambdaQuery()
                 .eq(RewardAllocation::getBeneficiaryUserId, userId)
-                .orderByDesc(RewardAllocation::getId)
-                .last("limit " + l)));
+                .orderByDesc(RewardAllocation::getId));
+        PageResult<RewardAllocation> pr = new PageResult<>();
+        pr.setPage(p);
+        pr.setSize(s);
+        pr.setTotal(pg.getTotal());
+        pr.setRecords(pg.getRecords());
+        return Result.ok(pr);
     }
 
     @GetMapping("/summary")

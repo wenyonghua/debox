@@ -1,6 +1,8 @@
 package com.debox.reward.modules.fund.controller;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.debox.reward.common.api.PageResult;
 import com.debox.reward.common.api.Result;
 import com.debox.reward.modules.fund.dto.FundSummaryResponse;
 import com.debox.reward.modules.fund.entity.FundReleaseEvent;
@@ -45,13 +47,21 @@ public class FundController {
     }
 
     @GetMapping("/releases")
-    public Result<List<FundReleaseEvent>> releases(@RequestParam Long userId,
-                                                   @RequestParam(defaultValue = "100") int limit) {
-        int l = Math.max(1, Math.min(200, limit));
-        return Result.ok(fundReleaseEventMapper.selectList(Wrappers.<FundReleaseEvent>lambdaQuery()
-                .eq(FundReleaseEvent::getUserId, userId)
-                .orderByDesc(FundReleaseEvent::getId)
-                .last("limit " + l)));
+    public Result<PageResult<FundReleaseEvent>> releases(@RequestParam Long userId,
+                                                         @RequestParam(defaultValue = "1") long page,
+                                                         @RequestParam(defaultValue = "20") long size) {
+        long p = Math.max(1, page);
+        long s = Math.max(1, Math.min(200, size));
+        Page<FundReleaseEvent> pg = fundReleaseEventMapper.selectPage(new Page<>(p, s),
+                Wrappers.<FundReleaseEvent>lambdaQuery()
+                        .eq(FundReleaseEvent::getUserId, userId)
+                        .orderByDesc(FundReleaseEvent::getId));
+        PageResult<FundReleaseEvent> pr = new PageResult<>();
+        pr.setPage(p);
+        pr.setSize(s);
+        pr.setTotal(pg.getTotal());
+        pr.setRecords(pg.getRecords());
+        return Result.ok(pr);
     }
 }
 

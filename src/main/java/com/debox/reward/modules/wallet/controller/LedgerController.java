@@ -1,6 +1,8 @@
 package com.debox.reward.modules.wallet.controller;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.debox.reward.common.api.PageResult;
 import com.debox.reward.common.api.Result;
 import com.debox.reward.modules.wallet.entity.WalletLedger;
 import com.debox.reward.modules.wallet.service.WalletLedgerService;
@@ -20,13 +22,20 @@ public class LedgerController {
     private final WalletLedgerService walletLedgerService;
 
     @GetMapping("/entries")
-    public Result<List<WalletLedger>> list(@RequestParam Long userId,
-                                          @RequestParam(defaultValue = "100") int limit) {
-        int l = Math.max(1, Math.min(200, limit));
-        return Result.ok(walletLedgerService.list(Wrappers.<WalletLedger>lambdaQuery()
+    public Result<PageResult<WalletLedger>> list(@RequestParam Long userId,
+                                                 @RequestParam(defaultValue = "1") long page,
+                                                 @RequestParam(defaultValue = "20") long size) {
+        long p = Math.max(1, page);
+        long s = Math.max(1, Math.min(200, size));
+        Page<WalletLedger> pg = walletLedgerService.page(new Page<>(p, s), Wrappers.<WalletLedger>lambdaQuery()
                 .eq(WalletLedger::getUserId, userId)
-                .orderByDesc(WalletLedger::getId)
-                .last("limit " + l)));
+                .orderByDesc(WalletLedger::getId));
+        PageResult<WalletLedger> pr = new PageResult<>();
+        pr.setPage(p);
+        pr.setSize(s);
+        pr.setTotal(pg.getTotal());
+        pr.setRecords(pg.getRecords());
+        return Result.ok(pr);
     }
 }
 

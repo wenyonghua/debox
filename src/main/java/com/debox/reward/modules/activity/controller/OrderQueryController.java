@@ -1,6 +1,8 @@
 package com.debox.reward.modules.activity.controller;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.debox.reward.common.api.PageResult;
 import com.debox.reward.common.api.Result;
 import com.debox.reward.modules.activity.dto.OrderDetailResponse;
 import com.debox.reward.modules.activity.entity.ActivityOrder;
@@ -25,15 +27,22 @@ public class OrderQueryController {
     private final RewardAllocationService rewardAllocationService;
 
     @GetMapping
-    public Result<List<ActivityOrder>> list(@RequestParam(required = false) Long userId,
-                                           @RequestParam(required = false) Long issueId,
-                                           @RequestParam(defaultValue = "50") int limit) {
-        int l = Math.max(1, Math.min(200, limit));
-        return Result.ok(activityOrderService.list(Wrappers.<ActivityOrder>lambdaQuery()
+    public Result<PageResult<ActivityOrder>> list(@RequestParam(required = false) Long userId,
+                                                  @RequestParam(required = false) Long issueId,
+                                                  @RequestParam(defaultValue = "1") long page,
+                                                  @RequestParam(defaultValue = "20") long size) {
+        long p = Math.max(1, page);
+        long s = Math.max(1, Math.min(200, size));
+        Page<ActivityOrder> pg = activityOrderService.page(new Page<>(p, s), Wrappers.<ActivityOrder>lambdaQuery()
                 .eq(userId != null, ActivityOrder::getUserId, userId)
                 .eq(issueId != null, ActivityOrder::getIssueId, issueId)
-                .orderByDesc(ActivityOrder::getCreatedAt)
-                .last("limit " + l)));
+                .orderByDesc(ActivityOrder::getCreatedAt));
+        PageResult<ActivityOrder> pr = new PageResult<>();
+        pr.setPage(p);
+        pr.setSize(s);
+        pr.setTotal(pg.getTotal());
+        pr.setRecords(pg.getRecords());
+        return Result.ok(pr);
     }
 
     @GetMapping("/{id}")

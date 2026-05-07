@@ -110,5 +110,31 @@ public class FundReleaseServiceImpl implements FundReleaseService {
             }
         }
     }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void retryFailedEvents(Long planId, int limit) {
+        int l = Math.max(1, Math.min(200, limit));
+        List<FundReleaseEvent> list = eventMapper.selectList(Wrappers.<FundReleaseEvent>lambdaQuery()
+                .eq(planId != null, FundReleaseEvent::getPlanId, planId)
+                .eq(FundReleaseEvent::getStatus, 2)
+                .orderByAsc(FundReleaseEvent::getId)
+                .last("limit " + l));
+        for (FundReleaseEvent ev : list) {
+            try {
+                // 幂等依赖 wallet_ledger.biz_no 唯一键
+                walletLedgerService.debit(ev.getUserId(), AssetCode.FUND_SIX, ev.getAmount(),
+                        WalletBizType.FUND_RELEASE, ev.getBizNo() + "-D", "基金释放重试扣减-" + ev.getBizNo());
+                walletLedgerService.credit(ev.getUserId(), AssetCode.SIX, ev.getAmount(),
+                        WalletBizType.FUND_RELEASE, ev.getBizNo() + "-C", "基金释放重试到账-" + ev.getBizNo());
+
+                ev.setStatus(1);
+                ev.setPostedAt(LocalDateTime.now());
+                eventMapper.updateById(ev);
+            } catch (Exception e) {
+                log.error("基金释放重试失败: eventId={}, bizNo={}", ev.getId(), ev.getBizNo(), e);
+            }
+        }
+    }
 }
 

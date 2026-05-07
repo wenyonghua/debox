@@ -169,3 +169,18 @@ CREATE TABLE IF NOT EXISTS fund_release_event (
     UNIQUE KEY uk_biz_no (biz_no),
     INDEX idx_user_date (user_id, release_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='基金释放事件';
+
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    admin_id BIGINT NULL,
+    action VARCHAR(64) NOT NULL,
+    target_type VARCHAR(64) NULL,
+    target_id VARCHAR(64) NULL,
+    before_json JSON NULL,
+    after_json JSON NULL,
+    created_at DATETIME NOT NULL,
+    INDEX idx_admin (admin_id),
+    INDEX idx_action (action),
+    INDEX idx_target (target_type, target_id),
+    INDEX idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='管理员操作审计日志';
