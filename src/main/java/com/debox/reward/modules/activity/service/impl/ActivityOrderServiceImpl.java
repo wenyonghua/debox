@@ -50,6 +50,14 @@ public class ActivityOrderServiceImpl extends ServiceImpl<ActivityOrderMapper, A
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ActivityOrder createOrder(CreateActivityOrderRequest request) {
+        User user = userMapper.selectById(request.getUserId());
+        if (user == null) {
+            throw new BizException("用户不存在");
+        }
+        if (user.getStatus() == null || user.getStatus() != 1) {
+            throw new BizException("账号已冻结，禁止下单");
+        }
+
         ActivityIssue issue = activityIssueService.getById(request.getIssueId());
         if (issue == null || issue.getStatus() != ActivityIssueStatus.OPEN) {
             throw new BizException("活动期号不可参与");
@@ -114,8 +122,8 @@ public class ActivityOrderServiceImpl extends ServiceImpl<ActivityOrderMapper, A
                     rules == null ? 1000L : parseLong(rules, "\"winRateBp\":", 1000L));
             boolean isWin = isWinBySeed(order.getOrderNo(), seed, winRateBp);
 
-            // 查询用户角色，触发分润/返水事件（由 reward_rule 配置驱动）
-            User user = userMapper.selectById(order.getUserId());
+        // 查询用户角色，触发分润/返水事件（由 reward_rule 配置驱动）
+        User user = userMapper.selectById(order.getUserId());
             if (user != null) {
                 rewardService.grantReward(order.getUserId(),
                         isWin ? "ACTIVITY_WIN_SELF" : "ACTIVITY_LOSE_SELF",

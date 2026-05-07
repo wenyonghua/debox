@@ -1,6 +1,8 @@
 package com.debox.reward.modules.activity.controller;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.debox.reward.common.api.PageResult;
 import com.debox.reward.common.api.Result;
 import com.debox.reward.modules.activity.entity.ActivityIssue;
 import com.debox.reward.modules.activity.enums.ActivityIssueStatus;
@@ -35,13 +37,19 @@ public class DrawController {
     }
 
     @GetMapping
-    public Result<List<ActivityIssue>> list(@RequestParam(defaultValue = "30") int limit) {
-        int l = Math.max(1, Math.min(200, limit));
-        List<ActivityIssue> list = activityIssueService.list(Wrappers.<ActivityIssue>lambdaQuery()
+    public Result<PageResult<ActivityIssue>> list(@RequestParam(defaultValue = "1") long page,
+                                                  @RequestParam(defaultValue = "20") long size) {
+        long p = Math.max(1, page);
+        long s = Math.max(1, Math.min(200, size));
+        Page<ActivityIssue> pg = activityIssueService.page(new Page<>(p, s), Wrappers.<ActivityIssue>lambdaQuery()
                 .in(ActivityIssue::getStatus, ActivityIssueStatus.OPEN, ActivityIssueStatus.SETTLING, ActivityIssueStatus.SETTLED)
-                .orderByDesc(ActivityIssue::getEndTime)
-                .last("limit " + l));
-        return Result.ok(list);
+                .orderByDesc(ActivityIssue::getEndTime));
+        PageResult<ActivityIssue> pr = new PageResult<>();
+        pr.setPage(p);
+        pr.setSize(s);
+        pr.setTotal(pg.getTotal());
+        pr.setRecords(pg.getRecords());
+        return Result.ok(pr);
     }
 
     @GetMapping("/{id}")

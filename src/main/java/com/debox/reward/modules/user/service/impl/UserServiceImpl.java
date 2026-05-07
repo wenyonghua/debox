@@ -14,6 +14,8 @@ import com.debox.reward.modules.wallet.service.WalletAccountService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -25,6 +27,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     private final UserMapper userMapper;
     private final UserInviteRelationMapper relationMapper;
     private final WalletAccountService walletAccountService;
+    private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -47,7 +50,10 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         user.setUserNo("U" + System.currentTimeMillis());
         user.setUsername(request.getUsername());
         user.setMobile(request.getMobile());
-        user.setPasswordHash(request.getPassword());
+        if (request.getPassword() == null || request.getPassword().isBlank()) {
+            throw new BizException("密码不能为空");
+        }
+        user.setPasswordHash(passwordEncoder.encode(request.getPassword()));
         user.setInviteCode(UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase());
         user.setParentId(parent == null ? null : parent.getId());
         user.setRole(UserRole.MEMBER);
