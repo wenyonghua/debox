@@ -1,0 +1,49 @@
+package com.debox.reward.modules.reward.controller;
+
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.debox.reward.common.api.Result;
+import com.debox.reward.modules.reward.dto.RewardSummaryResponse;
+import com.debox.reward.modules.reward.entity.RewardAllocation;
+import com.debox.reward.modules.reward.service.RewardAllocationService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.math.BigDecimal;
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/v1/rewards")
+@RequiredArgsConstructor
+public class RewardQueryController {
+
+    private final RewardAllocationService rewardAllocationService;
+
+    @GetMapping("/records")
+    public Result<List<RewardAllocation>> records(@RequestParam Long userId,
+                                                  @RequestParam(defaultValue = "100") int limit) {
+        int l = Math.max(1, Math.min(200, limit));
+        return Result.ok(rewardAllocationService.list(Wrappers.<RewardAllocation>lambdaQuery()
+                .eq(RewardAllocation::getBeneficiaryUserId, userId)
+                .orderByDesc(RewardAllocation::getId)
+                .last("limit " + l)));
+    }
+
+    @GetMapping("/summary")
+    public Result<RewardSummaryResponse> summary(@RequestParam Long userId) {
+        List<RewardAllocation> list = rewardAllocationService.list(Wrappers.<RewardAllocation>lambdaQuery()
+                .eq(RewardAllocation::getBeneficiaryUserId, userId));
+        BigDecimal total = BigDecimal.ZERO;
+        for (RewardAllocation a : list) {
+            if (a.getAmount() != null) {
+                total = total.add(a.getAmount());
+            }
+        }
+        RewardSummaryResponse resp = new RewardSummaryResponse();
+        resp.setTotalAmount(total);
+        return Result.ok(resp);
+    }
+}
+
