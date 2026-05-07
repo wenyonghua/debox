@@ -7,6 +7,7 @@ public enum WalletBizType {
     ORDER_STAKE,
     WIN_PAYOUT,
     LOST_FUND,
+    FUND_RELEASE,
     FREEZE,
     UNFREEZE,
     ADJUST

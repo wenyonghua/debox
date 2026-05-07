@@ -61,6 +61,9 @@ CREATE TABLE IF NOT EXISTS activity_issue (
     status VARCHAR(32) NOT NULL,
     start_time DATETIME NOT NULL,
     end_time DATETIME NOT NULL,
+    result_payload JSON NULL,
+    drawn_at DATETIME NULL,
+    rule_snapshot_id BIGINT NULL,
     settle_time DATETIME NULL,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
@@ -111,3 +114,58 @@ CREATE TABLE IF NOT EXISTS reward_record (
     INDEX idx_user_id (user_id),
     INDEX idx_source_biz_no (source_biz_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='奖励记录';
+
+CREATE TABLE IF NOT EXISTS reward_allocation (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    source_biz_no VARCHAR(64) NOT NULL,
+    issue_id BIGINT NULL,
+    order_id BIGINT NULL,
+    type VARCHAR(64) NOT NULL,
+    beneficiary_user_id BIGINT NULL,
+    asset_code VARCHAR(32) NOT NULL,
+    amount DECIMAL(36,18) NOT NULL,
+    status TINYINT NOT NULL DEFAULT 0,
+    remark VARCHAR(255) NULL,
+    created_at DATETIME NOT NULL,
+    posted_at DATETIME NULL,
+    INDEX idx_source_biz (source_biz_no),
+    INDEX idx_issue_order (issue_id, order_id),
+    INDEX idx_beneficiary (beneficiary_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='分配明细（allocations）';
+
+CREATE TABLE IF NOT EXISTS rule_snapshot (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    version VARCHAR(64) NOT NULL,
+    payload_json JSON NOT NULL,
+    created_at DATETIME NOT NULL,
+    INDEX idx_version (version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='规则快照';
+
+CREATE TABLE IF NOT EXISTS fund_release_plan (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    source_biz_no VARCHAR(64) NOT NULL,
+    total_amount DECIMAL(36,18) NOT NULL,
+    remaining_amount DECIMAL(36,18) NOT NULL,
+    daily_rate DECIMAL(18,8) NOT NULL,
+    status TINYINT NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    INDEX idx_user_status (user_id, status),
+    INDEX idx_source_biz (source_biz_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='基金释放计划';
+
+CREATE TABLE IF NOT EXISTS fund_release_event (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    plan_id BIGINT NOT NULL,
+    user_id BIGINT NOT NULL,
+    release_date DATE NOT NULL,
+    amount DECIMAL(36,18) NOT NULL,
+    status TINYINT NOT NULL DEFAULT 0,
+    biz_no VARCHAR(64) NOT NULL,
+    created_at DATETIME NOT NULL,
+    posted_at DATETIME NULL,
+    UNIQUE KEY uk_plan_date (plan_id, release_date),
+    UNIQUE KEY uk_biz_no (biz_no),
+    INDEX idx_user_date (user_id, release_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='基金释放事件';

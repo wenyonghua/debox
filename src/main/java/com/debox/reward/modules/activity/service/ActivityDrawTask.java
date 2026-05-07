@@ -2,6 +2,8 @@ package com.debox.reward.modules.activity.service;
 
 import com.debox.reward.common.redis.RedisLockService;
 import com.debox.reward.modules.activity.entity.ActivityIssue;
+import com.debox.reward.modules.reward.entity.RuleSnapshot;
+import com.debox.reward.modules.reward.service.RuleSnapshotService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -29,9 +31,11 @@ public class ActivityDrawTask {
      * 中奖率占位（bp = 1/10000）。后续应由规则快照/后台配置驱动。
      */
     private static final int DEFAULT_WIN_RATE_BP = 1000; // 10%
+    private static final String DEFAULT_RULE_VERSION = "v1";
 
     private final ActivityIssueService activityIssueService;
     private final RedisLockService redisLockService;
+    private final RuleSnapshotService ruleSnapshotService;
 
     /**
      * 21:34 执行（Asia/Shanghai）。
@@ -65,10 +69,16 @@ public class ActivityDrawTask {
 
             try {
                 long seed = Math.abs(RND.nextLong());
+                String rulePayload = buildDefaultRulePayload(DEFAULT_WIN_RATE_BP);
+                RuleSnapshot snapshot = ruleSnapshotService.createSnapshot(DEFAULT_RULE_VERSION, rulePayload);
+
                 String payload = "{\"algo\":\"hash_mod\",\"seed\":" + seed + ",\"winRateBp\":" + DEFAULT_WIN_RATE_BP
+                        + ",\"ruleSnapshotId\":" + snapshot.getId()
                         + ",\"drawTime\":\"" + LocalDateTime.now() + "\"}";
                 boolean ok = activityIssueService.markDrawn(issue.getId(), payload);
                 if (ok) {
+                    issue.setRuleSnapshotId(snapshot.getId());
+                    activityIssueService.updateById(issue);
                     log.info("开奖写入成功: issueNo={}, payload={}", issue.getIssueNo(), payload);
                 } else {
                     log.warn("开奖写入失败(可能已开奖/状态变化): issueNo={}", issue.getIssueNo());
@@ -79,6 +89,20 @@ public class ActivityDrawTask {
                 redisLockService.release(lockKey, lockVal);
             }
         }
+    }
+
+    private String buildDefaultRulePayload(int winRateBp) {
+        // 规则快照最小字段集：后续从后台配置生成并扩展（费率基数/级差/平级奖等）
+        return "{"
+                + "\"winRateBp\":" + winRateBp + ","
+                + "\"multiplier\":\"47\","
+                + "\"winFeeRate\":\"0.02\","
+                + "\"buybackRate\":\"0.02\","
+                + "\"profitShare\":{\"agent\":\"0.01\",\"union\":\"0.005\",\"director\":\"0.003\",\"platform\":\"0.021\"},"
+                + "\"fundRate\":\"0.05\","
+                + "\"rebate\":{\"member\":\"0.02\",\"shop\":\"0.03\",\"agent\":\"0.04\"},"
+                + "\"peerBonus\":{\"shop\":\"0.003\",\"agent\":\"0.004\"}"
+                + "}";
     }
 }
 

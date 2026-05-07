@@ -12,9 +12,12 @@ import com.debox.reward.modules.activity.mapper.ActivityOrderMapper;
 import com.debox.reward.modules.activity.service.ActivityIssueService;
 import com.debox.reward.modules.activity.service.ActivityOrderService;
 import com.debox.reward.modules.reward.entity.RewardAllocation;
+import com.debox.reward.modules.reward.entity.RuleSnapshot;
 import com.debox.reward.modules.reward.enums.AllocationType;
 import com.debox.reward.modules.reward.service.RewardAllocationService;
 import com.debox.reward.modules.reward.service.RewardService;
+import com.debox.reward.modules.reward.service.RuleSnapshotService;
+import com.debox.reward.modules.fund.service.FundReleaseService;
 import com.debox.reward.modules.user.entity.User;
 import com.debox.reward.modules.user.mapper.UserMapper;
 import com.debox.reward.modules.wallet.enums.AssetCode;
@@ -40,6 +43,8 @@ public class ActivityOrderServiceImpl extends ServiceImpl<ActivityOrderMapper, A
     private final WalletLedgerService walletLedgerService;
     private final RewardService rewardService;
     private final RewardAllocationService rewardAllocationService;
+    private final RuleSnapshotService ruleSnapshotService;
+    private final FundReleaseService fundReleaseService;
     private final UserMapper userMapper;
 
     @Override
@@ -81,6 +86,13 @@ public class ActivityOrderServiceImpl extends ServiceImpl<ActivityOrderMapper, A
             throw new BizException("期号尚未开奖，禁止结算: " + issue.getIssueNo());
         }
 
+        Long snapshotId = issue.getRuleSnapshotId();
+        if (snapshotId == null) {
+            snapshotId = parseLongObj(issue.getResultPayload(), "\"ruleSnapshotId\":");
+        }
+        RuleSnapshot snapshot = snapshotId == null ? null : ruleSnapshotService.getById(snapshotId);
+        String rules = snapshot == null ? null : snapshot.getPayloadJson();
+
         List<ActivityOrder> orders = list(Wrappers.<ActivityOrder>lambdaQuery()
                 .eq(ActivityOrder::getIssueId, issueId)
                 .eq(ActivityOrder::getStatus, ActivityOrderStatus.CREATED));
@@ -98,7 +110,8 @@ public class ActivityOrderServiceImpl extends ServiceImpl<ActivityOrderMapper, A
 
             // 判定中奖/不中奖（按期次 seed + winRateBp）
             long seed = parseLong(issue.getResultPayload(), "\"seed\":", 0L);
-            int winRateBp = (int) parseLong(issue.getResultPayload(), "\"winRateBp\":", 1000L);
+            int winRateBp = (int) parseLong(issue.getResultPayload(), "\"winRateBp\":",
+                    rules == null ? 1000L : parseLong(rules, "\"winRateBp\":", 1000L));
             boolean isWin = isWinBySeed(order.getOrderNo(), seed, winRateBp);
 
             // 查询用户角色，触发分润/返水事件（由 reward_rule 配置驱动）
@@ -120,36 +133,44 @@ public class ActivityOrderServiceImpl extends ServiceImpl<ActivityOrderMapper, A
             }
 
             if (isWin) {
-                // 中奖：47 倍，扣 2%（先按订单金额作为基数占位，后续由规则快照决定口径）
-                BigDecimal gross = order.getAmount().multiply(new BigDecimal("47"));
-                BigDecimal fee = gross.multiply(new BigDecimal("0.02"));
+                BigDecimal multiplier = parseDecimal(rules, "\"multiplier\":\"", new BigDecimal("47"));
+                BigDecimal winFeeRate = parseDecimal(rules, "\"winFeeRate\":\"", new BigDecimal("0.02"));
+                BigDecimal buybackRate = parseDecimal(rules, "\"buybackRate\":\"", new BigDecimal("0.02"));
+                BigDecimal platformRate = parseNestedDecimal(rules, "\"profitShare\":", "\"platform\":\"", new BigDecimal("0.021"));
+
+                // 中奖：倍数 * 金额，扣费率
+                BigDecimal gross = order.getAmount().multiply(multiplier);
+                BigDecimal fee = gross.multiply(winFeeRate);
                 BigDecimal net = gross.subtract(fee).setScale(18, RoundingMode.DOWN);
 
                 // allocations：用户派奖、回购池、平台分润（其余分润对象由 n4 补齐）
                 saveAllocation(order, issue, AllocationType.USER_PAYOUT, order.getUserId(), order.getAssetCode(), net,
                         "用户派奖(净额)");
                 saveAllocation(order, issue, AllocationType.BUYBACK_POOL, 0L, order.getAssetCode(),
-                        gross.multiply(new BigDecimal("0.02")).setScale(18, RoundingMode.DOWN), "回购池(2%)");
+                        gross.multiply(buybackRate).setScale(18, RoundingMode.DOWN), "回购池");
                 saveAllocation(order, issue, AllocationType.PROFIT_SHARE_PLATFORM, 0L, order.getAssetCode(),
-                        gross.multiply(new BigDecimal("0.021")).setScale(18, RoundingMode.DOWN), "平台分润(2.1%)");
-                allocateWinProfitShare(order, issue, gross);
+                        gross.multiply(platformRate).setScale(18, RoundingMode.DOWN), "平台分润");
+                allocateWinProfitShare(order, issue, gross, rules);
 
                 walletLedgerService.credit(order.getUserId(), order.getAssetCode(), net,
                         WalletBizType.WIN_PAYOUT, "PAYOUT-" + order.getOrderNo(),
                         "中奖派奖(47x)-扣2%-" + order.getOrderNo());
             } else {
-                // 不中奖：5% 进入基金（这里先用 BONUS 资产作为“基金占位账户”，后续替换为 SIX/FUND_SIX 等）
-                BigDecimal fund = order.getAmount().multiply(new BigDecimal("0.05"))
+                BigDecimal fundRate = parseDecimal(rules, "\"fundRate\":\"", new BigDecimal("0.05"));
+
+                // 不中奖：基金入账到待释放账户 FUND_SIX（占位：后续接 SIX 兑换与释放）
+                BigDecimal fund = order.getAmount().multiply(fundRate)
                         .setScale(18, RoundingMode.DOWN);
                 if (fund.compareTo(BigDecimal.ZERO) > 0) {
-                    saveAllocation(order, issue, AllocationType.FUND_IN, order.getUserId(), AssetCode.BONUS, fund,
-                            "基金入账(5%占位)");
-                    walletLedgerService.credit(order.getUserId(), AssetCode.BONUS, fund,
+                    saveAllocation(order, issue, AllocationType.FUND_IN, order.getUserId(), AssetCode.FUND_SIX, fund,
+                            "基金入账(待释放)");
+                    walletLedgerService.credit(order.getUserId(), AssetCode.FUND_SIX, fund,
                             WalletBizType.LOST_FUND, "FUND-" + order.getOrderNo(),
-                            "不中奖基金入账(5%占位)-" + order.getOrderNo());
+                            "不中奖基金入账(待释放)-" + order.getOrderNo());
+                    fundReleaseService.createPlan(order.getUserId(), order.getOrderNo(), fund);
                 }
 
-                allocateLoseRebates(order, issue, order.getAmount());
+                allocateLoseRebates(order, issue, order.getAmount(), rules);
             }
 
             // 标记订单已结算
@@ -206,10 +227,14 @@ public class ActivityOrderServiceImpl extends ServiceImpl<ActivityOrderMapper, A
         rewardAllocationService.saveIdempotent(a);
     }
 
-    private void allocateWinProfitShare(ActivityOrder order, ActivityIssue issue, BigDecimal gross) {
-        BigDecimal agentAmt = gross.multiply(new BigDecimal("0.01")).setScale(18, RoundingMode.DOWN);
-        BigDecimal unionAmt = gross.multiply(new BigDecimal("0.005")).setScale(18, RoundingMode.DOWN);
-        BigDecimal directorAmt = gross.multiply(new BigDecimal("0.003")).setScale(18, RoundingMode.DOWN);
+    private void allocateWinProfitShare(ActivityOrder order, ActivityIssue issue, BigDecimal gross, String rules) {
+        BigDecimal agentRate = parseNestedDecimal(rules, "\"profitShare\":", "\"agent\":\"", new BigDecimal("0.01"));
+        BigDecimal unionRate = parseNestedDecimal(rules, "\"profitShare\":", "\"union\":\"", new BigDecimal("0.005"));
+        BigDecimal directorRate = parseNestedDecimal(rules, "\"profitShare\":", "\"director\":\"", new BigDecimal("0.003"));
+
+        BigDecimal agentAmt = gross.multiply(agentRate).setScale(18, RoundingMode.DOWN);
+        BigDecimal unionAmt = gross.multiply(unionRate).setScale(18, RoundingMode.DOWN);
+        BigDecimal directorAmt = gross.multiply(directorRate).setScale(18, RoundingMode.DOWN);
 
         User agent = findFirstUplineByRole(order.getUserId(), com.debox.reward.modules.user.enums.UserRole.AGENT);
         if (agent != null) {
@@ -236,30 +261,72 @@ public class ActivityOrderServiceImpl extends ServiceImpl<ActivityOrderMapper, A
         }
     }
 
-    private void allocateLoseRebates(ActivityOrder order, ActivityIssue issue, BigDecimal base) {
-        // 图片1：会员2%，代理4%，挂靠小庄3%（平级奖暂不实现，级差制后续替换）
-        BigDecimal memberAmt = base.multiply(new BigDecimal("0.02")).setScale(18, RoundingMode.DOWN);
-        saveAllocation(order, issue, AllocationType.REBATE_MEMBER, order.getUserId(), order.getAssetCode(),
-                memberAmt, "会员返水(2%)");
+    private void allocateLoseRebates(ActivityOrder order, ActivityIssue issue, BigDecimal base, String rules) {
+        // 会员返水固定（不参与级差）
+        BigDecimal memberRate = parseNestedDecimal(rules, "\"rebate\":", "\"member\":\"", new BigDecimal("0.02"));
+        BigDecimal memberAmt = base.multiply(memberRate).setScale(18, RoundingMode.DOWN);
+        saveAllocation(order, issue, AllocationType.REBATE_MEMBER, order.getUserId(), order.getAssetCode(), memberAmt, "会员返水");
         walletLedgerService.credit(order.getUserId(), order.getAssetCode(), memberAmt,
                 WalletBizType.ACTIVITY_REWARD, "RBM-" + order.getOrderNo(), "会员返水-不中奖-" + order.getOrderNo());
 
-        BigDecimal agentAmt = base.multiply(new BigDecimal("0.04")).setScale(18, RoundingMode.DOWN);
-        User agent = findFirstUplineByRole(order.getUserId(), com.debox.reward.modules.user.enums.UserRole.AGENT);
-        if (agent != null) {
-            saveAllocation(order, issue, AllocationType.REBATE_AGENT, agent.getId(), order.getAssetCode(),
-                    agentAmt, "代理返水(4%)");
-            walletLedgerService.credit(agent.getId(), order.getAssetCode(), agentAmt,
-                    WalletBizType.ACTIVITY_REWARD, "RBA-" + order.getOrderNo(), "代理返水-不中奖-" + order.getOrderNo());
+        // 级差：从近到远遍历上级，按角色目标比例发放差额（SHOP 3% < AGENT 4%）
+        BigDecimal shopRate = parseNestedDecimal(rules, "\"rebate\":", "\"shop\":\"", new BigDecimal("0.03"));
+        BigDecimal agentRate = parseNestedDecimal(rules, "\"rebate\":", "\"agent\":\"", new BigDecimal("0.04"));
+        BigDecimal allocatedRate = BigDecimal.ZERO;
+
+        User firstShop = null;
+        User firstAgent = null;
+        User secondShop = null;
+        User secondAgent = null;
+
+        Long cur = order.getUserId();
+        for (int i = 0; i < 20; i++) {
+            User u = userMapper.selectById(cur);
+            if (u == null || u.getParentId() == null) break;
+            User p = userMapper.selectById(u.getParentId());
+            if (p == null) break;
+
+            BigDecimal target = null;
+            AllocationType type = null;
+            if (p.getRole() == com.debox.reward.modules.user.enums.UserRole.SHOP) {
+                target = shopRate;
+                type = AllocationType.REBATE_SHOP;
+                if (firstShop == null) firstShop = p; else if (secondShop == null) secondShop = p;
+            } else if (p.getRole() == com.debox.reward.modules.user.enums.UserRole.AGENT) {
+                target = agentRate;
+                type = AllocationType.REBATE_AGENT;
+                if (firstAgent == null) firstAgent = p; else if (secondAgent == null) secondAgent = p;
+            }
+
+            if (target != null && target.compareTo(allocatedRate) > 0) {
+                BigDecimal diff = target.subtract(allocatedRate);
+                BigDecimal amt = base.multiply(diff).setScale(18, RoundingMode.DOWN);
+                saveAllocation(order, issue, type, p.getId(), order.getAssetCode(), amt, "级差返水");
+                walletLedgerService.credit(p.getId(), order.getAssetCode(), amt,
+                        WalletBizType.ACTIVITY_REWARD, "RBD-" + order.getOrderNo() + "-" + p.getId(),
+                        "级差返水-不中奖-" + order.getOrderNo());
+                allocatedRate = target;
+            }
+
+            cur = p.getId();
         }
 
-        BigDecimal shopAmt = base.multiply(new BigDecimal("0.03")).setScale(18, RoundingMode.DOWN);
-        User shop = findFirstUplineByRole(order.getUserId(), com.debox.reward.modules.user.enums.UserRole.SHOP);
-        if (shop != null) {
-            saveAllocation(order, issue, AllocationType.REBATE_SHOP, shop.getId(), order.getAssetCode(),
-                    shopAmt, "挂靠小庄返水(3%)");
-            walletLedgerService.credit(shop.getId(), order.getAssetCode(), shopAmt,
-                    WalletBizType.ACTIVITY_REWARD, "RBS-" + order.getOrderNo(), "挂靠返水-不中奖-" + order.getOrderNo());
+        // 平级奖（占位实现）：同角色第二个节点拿平级比例
+        BigDecimal peerShop = parseNestedDecimal(rules, "\"peerBonus\":", "\"shop\":\"", new BigDecimal("0.003"));
+        BigDecimal peerAgent = parseNestedDecimal(rules, "\"peerBonus\":", "\"agent\":\"", new BigDecimal("0.004"));
+        if (secondShop != null && peerShop.compareTo(BigDecimal.ZERO) > 0) {
+            BigDecimal amt = base.multiply(peerShop).setScale(18, RoundingMode.DOWN);
+            saveAllocation(order, issue, AllocationType.PEER_BONUS, secondShop.getId(), order.getAssetCode(), amt, "平级奖-小庄");
+            walletLedgerService.credit(secondShop.getId(), order.getAssetCode(), amt,
+                    WalletBizType.ACTIVITY_REWARD, "PBS-" + order.getOrderNo() + "-" + secondShop.getId(),
+                    "平级奖-小庄-" + order.getOrderNo());
+        }
+        if (secondAgent != null && peerAgent.compareTo(BigDecimal.ZERO) > 0) {
+            BigDecimal amt = base.multiply(peerAgent).setScale(18, RoundingMode.DOWN);
+            saveAllocation(order, issue, AllocationType.PEER_BONUS, secondAgent.getId(), order.getAssetCode(), amt, "平级奖-代理");
+            walletLedgerService.credit(secondAgent.getId(), order.getAssetCode(), amt,
+                    WalletBizType.ACTIVITY_REWARD, "PBA-" + order.getOrderNo() + "-" + secondAgent.getId(),
+                    "平级奖-代理-" + order.getOrderNo());
         }
     }
 
@@ -278,5 +345,36 @@ public class ActivityOrderServiceImpl extends ServiceImpl<ActivityOrderMapper, A
             cur = parent.getId();
         }
         return null;
+    }
+
+    private Long parseLongObj(String payload, String keyPrefix) {
+        long v = parseLong(payload, keyPrefix, Long.MIN_VALUE);
+        return v == Long.MIN_VALUE ? null : v;
+    }
+
+    private BigDecimal parseDecimal(String rules, String keyPrefix, BigDecimal defaultVal) {
+        if (rules == null) return defaultVal;
+        try {
+            int idx = rules.indexOf(keyPrefix);
+            if (idx < 0) return defaultVal;
+            int start = idx + keyPrefix.length();
+            int end = rules.indexOf("\"", start);
+            if (end < 0) return defaultVal;
+            return new BigDecimal(rules.substring(start, end));
+        } catch (Exception ignore) {
+            return defaultVal;
+        }
+    }
+
+    private BigDecimal parseNestedDecimal(String rules, String objectKey, String keyPrefix, BigDecimal defaultVal) {
+        if (rules == null) return defaultVal;
+        int objIdx = rules.indexOf(objectKey);
+        if (objIdx < 0) return defaultVal;
+        int brace = rules.indexOf("{", objIdx);
+        if (brace < 0) return defaultVal;
+        int endObj = rules.indexOf("}", brace);
+        if (endObj < 0) return defaultVal;
+        String sub = rules.substring(brace, endObj + 1);
+        return parseDecimal(sub, keyPrefix, defaultVal);
     }
 }
