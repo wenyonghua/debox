@@ -19,6 +19,18 @@ public class ActivityIssue {
     private ActivityIssueStatus status;
     private LocalDateTime startTime;
     private LocalDateTime endTime;
+    /**
+     * 开奖结果负载（JSON 字符串）：包含 seed、winRateBp、算法版本等
+     */
+    private String resultPayload;
+    /**
+     * 开奖时间
+     */
+    private LocalDateTime drawnAt;
+    /**
+     * 规则快照 ID（占位：后续接 rule_snapshot）
+     */
+    private Long ruleSnapshotId;
     private LocalDateTime settleTime;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
