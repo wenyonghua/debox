@@ -35,4 +35,9 @@ public interface ActivityIssueService extends IService<ActivityIssue> {
      * 将期号标记为 SETTLED（结算完成）
      */
     void markSettled(Long issueId);
+
+    /**
+     * 结算中且可能仍有未结订单的期号（用于恢复任务）
+     */
+    List<ActivityIssue> listIncompleteSettling();
 }

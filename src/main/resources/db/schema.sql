@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS fund_release_plan (
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
     INDEX idx_user_status (user_id, status),
-    INDEX idx_source_biz (source_biz_no)
+    UNIQUE KEY uk_source_biz (source_biz_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='基金释放计划';
 
 CREATE TABLE IF NOT EXISTS fund_release_event (
@@ -169,6 +169,42 @@ CREATE TABLE IF NOT EXISTS fund_release_event (
     UNIQUE KEY uk_biz_no (biz_no),
     INDEX idx_user_date (user_id, release_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='基金释放事件';
+
+CREATE TABLE IF NOT EXISTS retry_task (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    biz_type VARCHAR(32) NOT NULL,
+    biz_key VARCHAR(128) NOT NULL,
+    order_id BIGINT NULL,
+    issue_id BIGINT NULL,
+    last_error VARCHAR(2048) NULL,
+    status VARCHAR(32) NOT NULL,
+    retry_count INT NOT NULL DEFAULT 0,
+    max_retries INT NOT NULL DEFAULT 144,
+    next_retry_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    UNIQUE KEY uk_biz_key (biz_key),
+    INDEX idx_status_next (status, next_retry_at),
+    INDEX idx_order (order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='失败重试任务';
+
+CREATE TABLE IF NOT EXISTS compensation_order (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    biz_no VARCHAR(64) NOT NULL UNIQUE,
+    user_id BIGINT NOT NULL,
+    asset_code VARCHAR(32) NOT NULL,
+    direction VARCHAR(16) NOT NULL,
+    amount DECIMAL(36,18) NOT NULL,
+    remark VARCHAR(512) NULL,
+    status VARCHAR(32) NOT NULL,
+    created_by BIGINT NULL,
+    approved_by BIGINT NULL,
+    executed_biz_no VARCHAR(128) NULL,
+    rejection_reason VARCHAR(512) NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    INDEX idx_user_status (user_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='补偿单审批';
 
 CREATE TABLE IF NOT EXISTS admin_audit_log (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,

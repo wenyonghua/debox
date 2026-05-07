@@ -73,4 +73,37 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         walletAccountService.createDefaultAccounts(user.getId());
         return user;
     }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void bindReferrer(Long userId, String inviteCode) {
+        if (inviteCode == null || inviteCode.isBlank()) {
+            throw new BizException("邀请码不能为空");
+        }
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BizException("用户不存在");
+        }
+        if (user.getParentId() != null) {
+            throw new BizException("已绑定邀请人，不可重复绑定");
+        }
+        User parent = userMapper.selectOne(Wrappers.<User>lambdaQuery().eq(User::getInviteCode, inviteCode.trim()));
+        if (parent == null) {
+            throw new BizException("邀请码不存在");
+        }
+        if (parent.getId().equals(userId)) {
+            throw new BizException("不能绑定自己");
+        }
+
+        user.setParentId(parent.getId());
+        user.setUpdatedAt(LocalDateTime.now());
+        userMapper.updateById(user);
+
+        relationMapper.update(null,
+                Wrappers.<UserInviteRelation>lambdaUpdate()
+                        .set(UserInviteRelation::getParentId, parent.getId())
+                        .set(UserInviteRelation::getDepth, 1)
+                        .set(UserInviteRelation::getPath, parent.getId() + "/" + user.getId())
+                        .eq(UserInviteRelation::getUserId, userId));
+    }
 }

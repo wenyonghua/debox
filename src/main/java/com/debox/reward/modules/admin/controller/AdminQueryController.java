@@ -1,5 +1,6 @@
 package com.debox.reward.modules.admin.controller;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.debox.reward.common.api.PageResult;
@@ -10,6 +11,12 @@ import com.debox.reward.modules.activity.service.ActivityIssueService;
 import com.debox.reward.modules.activity.service.ActivityOrderService;
 import com.debox.reward.modules.admin.entity.AdminAuditLog;
 import com.debox.reward.modules.admin.mapper.AdminAuditLogMapper;
+import com.debox.reward.modules.compensation.entity.CompensationOrder;
+import com.debox.reward.modules.compensation.enums.CompensationOrderStatus;
+import com.debox.reward.modules.compensation.service.CompensationOrderService;
+import com.debox.reward.modules.job.entity.RetryTask;
+import com.debox.reward.modules.job.enums.RetryTaskStatus;
+import com.debox.reward.modules.job.service.RetryTaskService;
 import com.debox.reward.modules.reward.entity.RewardAllocation;
 import com.debox.reward.modules.reward.service.RewardAllocationService;
 import com.debox.reward.modules.user.entity.User;
@@ -30,6 +37,8 @@ public class AdminQueryController {
     private final ActivityIssueService activityIssueService;
     private final ActivityOrderService activityOrderService;
     private final RewardAllocationService rewardAllocationService;
+    private final CompensationOrderService compensationOrderService;
+    private final RetryTaskService retryTaskService;
 
     @GetMapping("/audit-logs")
     public Result<PageResult<AdminAuditLog>> auditLogs(@RequestParam(defaultValue = "1") long page,
@@ -126,6 +135,47 @@ public class AdminQueryController {
                         .eq(sourceBizNo != null && !sourceBizNo.isBlank(), RewardAllocation::getSourceBizNo, sourceBizNo)
                         .orderByDesc(RewardAllocation::getId));
         PageResult<RewardAllocation> pr = new PageResult<>();
+        pr.setPage(p);
+        pr.setSize(s);
+        pr.setTotal(pg.getTotal());
+        pr.setRecords(pg.getRecords());
+        return Result.ok(pr);
+    }
+
+    @GetMapping("/retry-tasks")
+    public Result<PageResult<RetryTask>> retryTasks(@RequestParam(defaultValue = "1") long page,
+                                                   @RequestParam(defaultValue = "20") long size,
+                                                   @RequestParam(required = false) String status) {
+        long p = Math.max(1, page);
+        long s = Math.max(1, Math.min(200, size));
+        LambdaQueryWrapper<RetryTask> q = Wrappers.<RetryTask>lambdaQuery().orderByDesc(RetryTask::getId);
+        if (status != null && !status.isBlank()) {
+            q.eq(RetryTask::getStatus, RetryTaskStatus.valueOf(status.trim()));
+        }
+        Page<RetryTask> pg = retryTaskService.page(new Page<>(p, s), q);
+        PageResult<RetryTask> pr = new PageResult<>();
+        pr.setPage(p);
+        pr.setSize(s);
+        pr.setTotal(pg.getTotal());
+        pr.setRecords(pg.getRecords());
+        return Result.ok(pr);
+    }
+
+    @GetMapping("/compensations")
+    public Result<PageResult<CompensationOrder>> compensations(@RequestParam(defaultValue = "1") long page,
+                                                               @RequestParam(defaultValue = "20") long size,
+                                                               @RequestParam(required = false) String status,
+                                                               @RequestParam(required = false) Long userId) {
+        long p = Math.max(1, page);
+        long s = Math.max(1, Math.min(200, size));
+        LambdaQueryWrapper<CompensationOrder> q = Wrappers.<CompensationOrder>lambdaQuery()
+                .eq(userId != null, CompensationOrder::getUserId, userId)
+                .orderByDesc(CompensationOrder::getId);
+        if (status != null && !status.isBlank()) {
+            q.eq(CompensationOrder::getStatus, CompensationOrderStatus.valueOf(status.trim()));
+        }
+        Page<CompensationOrder> pg = compensationOrderService.page(new Page<>(p, s), q);
+        PageResult<CompensationOrder> pr = new PageResult<>();
         pr.setPage(p);
         pr.setSize(s);
         pr.setTotal(pg.getTotal());

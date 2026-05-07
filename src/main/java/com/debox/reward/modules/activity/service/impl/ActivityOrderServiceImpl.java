@@ -18,6 +18,7 @@ import com.debox.reward.modules.reward.service.RewardAllocationService;
 import com.debox.reward.modules.reward.service.RewardService;
 import com.debox.reward.modules.reward.service.RuleSnapshotService;
 import com.debox.reward.modules.fund.service.FundReleaseService;
+import com.debox.reward.modules.job.service.RetryTaskService;
 import com.debox.reward.modules.user.entity.User;
 import com.debox.reward.modules.user.mapper.UserMapper;
 import com.debox.reward.modules.wallet.enums.AssetCode;
@@ -25,7 +26,10 @@ import com.debox.reward.modules.wallet.enums.WalletBizType;
 import com.debox.reward.modules.wallet.service.WalletLedgerService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -45,7 +49,13 @@ public class ActivityOrderServiceImpl extends ServiceImpl<ActivityOrderMapper, A
     private final RewardAllocationService rewardAllocationService;
     private final RuleSnapshotService ruleSnapshotService;
     private final FundReleaseService fundReleaseService;
+    private final RetryTaskService retryTaskService;
     private final UserMapper userMapper;
+
+    /** 独立事务单笔结算需要自身代理调用 */
+    @Lazy
+    @Autowired
+    private ActivityOrderService self;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -94,6 +104,43 @@ public class ActivityOrderServiceImpl extends ServiceImpl<ActivityOrderMapper, A
             throw new BizException("期号尚未开奖，禁止结算: " + issue.getIssueNo());
         }
 
+        List<ActivityOrder> orders = list(Wrappers.<ActivityOrder>lambdaQuery()
+                .eq(ActivityOrder::getIssueId, issueId)
+                .eq(ActivityOrder::getStatus, ActivityOrderStatus.CREATED));
+
+        for (ActivityOrder order : orders) {
+            try {
+                self.settleSingleOrder(order.getId());
+            } catch (Exception e) {
+                log.error("单笔订单结算失败，将入队重试: orderId={}, issueId={}", order.getId(), issueId, e);
+                retryTaskService.enqueueOrderSettlement(order.getId(), issueId, e.getMessage());
+            }
+        }
+
+        long pending = count(Wrappers.<ActivityOrder>lambdaQuery()
+                .eq(ActivityOrder::getIssueId, issueId)
+                .eq(ActivityOrder::getStatus, ActivityOrderStatus.CREATED));
+        if (pending == 0) {
+            activityIssueService.markSettled(issueId);
+        }
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
+    public void settleSingleOrder(Long orderId) {
+        ActivityOrder order = getById(orderId);
+        if (order == null || order.getStatus() != ActivityOrderStatus.CREATED) {
+            return;
+        }
+
+        ActivityIssue issue = activityIssueService.getById(order.getIssueId());
+        if (issue == null) {
+            throw new BizException("期号不存在: " + order.getIssueId());
+        }
+        if (issue.getDrawnAt() == null || issue.getResultPayload() == null || issue.getResultPayload().isBlank()) {
+            throw new BizException("期号尚未开奖，禁止结算: " + issue.getIssueNo());
+        }
+
         Long snapshotId = issue.getRuleSnapshotId();
         if (snapshotId == null) {
             snapshotId = parseLongObj(issue.getResultPayload(), "\"ruleSnapshotId\":");
@@ -101,94 +148,79 @@ public class ActivityOrderServiceImpl extends ServiceImpl<ActivityOrderMapper, A
         RuleSnapshot snapshot = snapshotId == null ? null : ruleSnapshotService.getById(snapshotId);
         String rules = snapshot == null ? null : snapshot.getPayloadJson();
 
-        List<ActivityOrder> orders = list(Wrappers.<ActivityOrder>lambdaQuery()
-                .eq(ActivityOrder::getIssueId, issueId)
-                .eq(ActivityOrder::getStatus, ActivityOrderStatus.CREATED));
+        walletLedgerService.unfreeze(order.getUserId(), order.getAssetCode(),
+                order.getAmount(),
+                "UNFREEZE-" + order.getOrderNo(),
+                "活动结算解冻-" + order.getOrderNo());
 
-        for (ActivityOrder order : orders) {
-            // 解冻积分
-            walletLedgerService.unfreeze(order.getUserId(), order.getAssetCode(),
-                    order.getAmount(),
-                    "UNFREEZE-" + order.getOrderNo(),
-                    "活动结算解冻-" + order.getOrderNo());
+        walletLedgerService.debit(order.getUserId(), order.getAssetCode(), order.getAmount(),
+                WalletBizType.ORDER_STAKE, "STAKE-" + order.getOrderNo(), "活动参与扣除本金-" + order.getOrderNo());
 
-            // 扣除参与本金（从可用余额扣掉）
-            walletLedgerService.debit(order.getUserId(), order.getAssetCode(), order.getAmount(),
-                    WalletBizType.ORDER_STAKE, "STAKE-" + order.getOrderNo(), "活动参与扣除本金-" + order.getOrderNo());
+        long seed = parseLong(issue.getResultPayload(), "\"seed\":", 0L);
+        int winRateBp = (int) parseLong(issue.getResultPayload(), "\"winRateBp\":",
+                rules == null ? 1000L : parseLong(rules, "\"winRateBp\":", 1000L));
+        boolean isWin = isWinBySeed(order.getOrderNo(), seed, winRateBp);
 
-            // 判定中奖/不中奖（按期次 seed + winRateBp）
-            long seed = parseLong(issue.getResultPayload(), "\"seed\":", 0L);
-            int winRateBp = (int) parseLong(issue.getResultPayload(), "\"winRateBp\":",
-                    rules == null ? 1000L : parseLong(rules, "\"winRateBp\":", 1000L));
-            boolean isWin = isWinBySeed(order.getOrderNo(), seed, winRateBp);
-
-        // 查询用户角色，触发分润/返水事件（由 reward_rule 配置驱动）
         User user = userMapper.selectById(order.getUserId());
-            if (user != null) {
-                rewardService.grantReward(order.getUserId(),
-                        isWin ? "ACTIVITY_WIN_SELF" : "ACTIVITY_LOSE_SELF",
-                        order.getOrderNo(), user.getRole(), order.getAmount());
+        if (user != null) {
+            rewardService.grantReward(order.getUserId(),
+                    isWin ? "ACTIVITY_WIN_SELF" : "ACTIVITY_LOSE_SELF",
+                    order.getOrderNo(), user.getRole(), order.getAmount());
 
-                // 如果用户有上级，触发上级的分润/返水事件
-                if (user.getParentId() != null) {
-                    User parent = userMapper.selectById(user.getParentId());
-                    if (parent != null) {
-                        rewardService.grantReward(parent.getId(),
-                                isWin ? "ACTIVITY_WIN_UPLINE" : "ACTIVITY_LOSE_UPLINE",
-                                order.getOrderNo(), parent.getRole(), order.getAmount());
-                    }
+            if (user.getParentId() != null) {
+                User parent = userMapper.selectById(user.getParentId());
+                if (parent != null) {
+                    rewardService.grantReward(parent.getId(),
+                            isWin ? "ACTIVITY_WIN_UPLINE" : "ACTIVITY_LOSE_UPLINE",
+                            order.getOrderNo(), parent.getRole(), order.getAmount());
                 }
             }
-
-            if (isWin) {
-                BigDecimal multiplier = parseDecimal(rules, "\"multiplier\":\"", new BigDecimal("47"));
-                BigDecimal winFeeRate = parseDecimal(rules, "\"winFeeRate\":\"", new BigDecimal("0.02"));
-                BigDecimal buybackRate = parseDecimal(rules, "\"buybackRate\":\"", new BigDecimal("0.02"));
-                BigDecimal platformRate = parseNestedDecimal(rules, "\"profitShare\":", "\"platform\":\"", new BigDecimal("0.021"));
-
-                // 中奖：倍数 * 金额，扣费率
-                BigDecimal gross = order.getAmount().multiply(multiplier);
-                BigDecimal fee = gross.multiply(winFeeRate);
-                BigDecimal net = gross.subtract(fee).setScale(18, RoundingMode.DOWN);
-
-                // allocations：用户派奖、回购池、平台分润（其余分润对象由 n4 补齐）
-                saveAllocation(order, issue, AllocationType.USER_PAYOUT, order.getUserId(), order.getAssetCode(), net,
-                        "用户派奖(净额)");
-                saveAllocation(order, issue, AllocationType.BUYBACK_POOL, 0L, order.getAssetCode(),
-                        gross.multiply(buybackRate).setScale(18, RoundingMode.DOWN), "回购池");
-                saveAllocation(order, issue, AllocationType.PROFIT_SHARE_PLATFORM, 0L, order.getAssetCode(),
-                        gross.multiply(platformRate).setScale(18, RoundingMode.DOWN), "平台分润");
-                allocateWinProfitShare(order, issue, gross, rules);
-
-                walletLedgerService.credit(order.getUserId(), order.getAssetCode(), net,
-                        WalletBizType.WIN_PAYOUT, "PAYOUT-" + order.getOrderNo(),
-                        "中奖派奖(47x)-扣2%-" + order.getOrderNo());
-            } else {
-                BigDecimal fundRate = parseDecimal(rules, "\"fundRate\":\"", new BigDecimal("0.05"));
-
-                // 不中奖：基金入账到待释放账户 FUND_SIX（占位：后续接 SIX 兑换与释放）
-                BigDecimal fund = order.getAmount().multiply(fundRate)
-                        .setScale(18, RoundingMode.DOWN);
-                if (fund.compareTo(BigDecimal.ZERO) > 0) {
-                    saveAllocation(order, issue, AllocationType.FUND_IN, order.getUserId(), AssetCode.FUND_SIX, fund,
-                            "基金入账(待释放)");
-                    walletLedgerService.credit(order.getUserId(), AssetCode.FUND_SIX, fund,
-                            WalletBizType.LOST_FUND, "FUND-" + order.getOrderNo(),
-                            "不中奖基金入账(待释放)-" + order.getOrderNo());
-                    fundReleaseService.createPlan(order.getUserId(), order.getOrderNo(), fund);
-                }
-
-                allocateLoseRebates(order, issue, order.getAmount(), rules);
-            }
-
-            // 标记订单已结算
-            baseMapper.update(null, Wrappers.<ActivityOrder>lambdaUpdate()
-                    .set(ActivityOrder::getStatus, ActivityOrderStatus.SETTLED)
-                    .set(ActivityOrder::getSettledAt, LocalDateTime.now())
-                    .eq(ActivityOrder::getId, order.getId()));
-
-            log.info("订单结算完成: orderNo={}", order.getOrderNo());
         }
+
+        if (isWin) {
+            BigDecimal multiplier = parseDecimal(rules, "\"multiplier\":\"", new BigDecimal("47"));
+            BigDecimal winFeeRate = parseDecimal(rules, "\"winFeeRate\":\"", new BigDecimal("0.02"));
+            BigDecimal buybackRate = parseDecimal(rules, "\"buybackRate\":\"", new BigDecimal("0.02"));
+            BigDecimal platformRate = parseNestedDecimal(rules, "\"profitShare\":", "\"platform\":\"", new BigDecimal("0.021"));
+
+            BigDecimal gross = order.getAmount().multiply(multiplier);
+            BigDecimal fee = gross.multiply(winFeeRate);
+            BigDecimal net = gross.subtract(fee).setScale(18, RoundingMode.DOWN);
+
+            saveAllocation(order, issue, AllocationType.USER_PAYOUT, order.getUserId(), order.getAssetCode(), net,
+                    "用户派奖(净额)");
+            saveAllocation(order, issue, AllocationType.BUYBACK_POOL, 0L, order.getAssetCode(),
+                    gross.multiply(buybackRate).setScale(18, RoundingMode.DOWN), "回购池");
+            saveAllocation(order, issue, AllocationType.PROFIT_SHARE_PLATFORM, 0L, order.getAssetCode(),
+                    gross.multiply(platformRate).setScale(18, RoundingMode.DOWN), "平台分润");
+            allocateWinProfitShare(order, issue, gross, rules);
+
+            walletLedgerService.credit(order.getUserId(), order.getAssetCode(), net,
+                    WalletBizType.WIN_PAYOUT, "PAYOUT-" + order.getOrderNo(),
+                    "中奖派奖(47x)-扣2%-" + order.getOrderNo());
+        } else {
+            BigDecimal fundRate = parseDecimal(rules, "\"fundRate\":\"", new BigDecimal("0.05"));
+
+            BigDecimal fund = order.getAmount().multiply(fundRate)
+                    .setScale(18, RoundingMode.DOWN);
+            if (fund.compareTo(BigDecimal.ZERO) > 0) {
+                saveAllocation(order, issue, AllocationType.FUND_IN, order.getUserId(), AssetCode.FUND_SIX, fund,
+                        "基金入账(待释放)");
+                walletLedgerService.credit(order.getUserId(), AssetCode.FUND_SIX, fund,
+                        WalletBizType.LOST_FUND, "FUND-" + order.getOrderNo(),
+                        "不中奖基金入账(待释放)-" + order.getOrderNo());
+                fundReleaseService.createPlanIfAbsent(order.getUserId(), order.getOrderNo(), fund);
+            }
+
+            allocateLoseRebates(order, issue, order.getAmount(), rules);
+        }
+
+        baseMapper.update(null, Wrappers.<ActivityOrder>lambdaUpdate()
+                .set(ActivityOrder::getStatus, ActivityOrderStatus.SETTLED)
+                .set(ActivityOrder::getSettledAt, LocalDateTime.now())
+                .eq(ActivityOrder::getId, order.getId()));
+
+        log.info("订单结算完成: orderNo={}", order.getOrderNo());
     }
 
     private boolean isWinBySeed(String orderNo, long seed, int winRateBp) {

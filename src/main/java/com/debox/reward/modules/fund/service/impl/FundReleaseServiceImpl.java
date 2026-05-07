@@ -11,6 +11,7 @@ import com.debox.reward.modules.wallet.enums.WalletBizType;
 import com.debox.reward.modules.wallet.service.WalletLedgerService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,6 +31,21 @@ public class FundReleaseServiceImpl implements FundReleaseService {
     private final FundReleasePlanMapper planMapper;
     private final FundReleaseEventMapper eventMapper;
     private final WalletLedgerService walletLedgerService;
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void createPlanIfAbsent(Long userId, String sourceBizNo, BigDecimal amount) {
+        Long cnt = planMapper.selectCount(Wrappers.<FundReleasePlan>lambdaQuery()
+                .eq(FundReleasePlan::getSourceBizNo, sourceBizNo));
+        if (cnt != null && cnt > 0) {
+            return;
+        }
+        try {
+            createPlan(userId, sourceBizNo, amount);
+        } catch (DataIntegrityViolationException ignored) {
+            // 并发下唯一键冲突视为已创建
+        }
+    }
 
     @Override
     @Transactional(rollbackFor = Exception.class)

@@ -7,12 +7,13 @@ import com.debox.reward.common.api.Result;
 import com.debox.reward.modules.wallet.entity.WalletLedger;
 import com.debox.reward.modules.wallet.service.WalletLedgerService;
 import lombok.RequiredArgsConstructor;
+import com.debox.reward.common.exception.BizException;
+import com.debox.reward.modules.auth.security.SecurityUtils;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/ledger")
@@ -36,6 +37,19 @@ public class LedgerController {
         pr.setTotal(pg.getTotal());
         pr.setRecords(pg.getRecords());
         return Result.ok(pr);
+    }
+
+    @GetMapping("/entries/{id}")
+    public Result<WalletLedger> entry(@PathVariable Long id) {
+        Long uid = SecurityUtils.currentUserId();
+        if (uid == null) {
+            throw new BizException("未登录");
+        }
+        WalletLedger row = walletLedgerService.getById(id);
+        if (row == null || !uid.equals(row.getUserId())) {
+            throw new BizException("流水不存在或无权查看");
+        }
+        return Result.ok(row);
     }
 }
 

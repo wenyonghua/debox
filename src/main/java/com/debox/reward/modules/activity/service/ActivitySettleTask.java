@@ -50,8 +50,8 @@ public class ActivitySettleTask {
 
                 log.info("开始结算期号: {}", issue.getIssueNo());
                 activityOrderService.settleIssueOrders(issue.getId());
-                activityIssueService.markSettled(issue.getId());
-                log.info("期号结算完成: {}", issue.getIssueNo());
+                // settleIssueOrders 内部在全部订单 CREATED 清零后才会 markSettled；部分失败留在 SETTLING 由恢复任务继续
+                log.info("期号结算批次结束: {}", issue.getIssueNo());
 
             } catch (Exception e) {
                 log.error("期号结算异常: issueNo={}", issue.getIssueNo(), e);

@@ -71,4 +71,11 @@ public class ActivityIssueServiceImpl extends ServiceImpl<ActivityIssueMapper, A
                         .set(ActivityIssue::getUpdatedAt, LocalDateTime.now())
                         .eq(ActivityIssue::getId, issueId));
     }
+
+    @Override
+    public List<ActivityIssue> listIncompleteSettling() {
+        return list(Wrappers.<ActivityIssue>lambdaQuery()
+                .eq(ActivityIssue::getStatus, ActivityIssueStatus.SETTLING)
+                .orderByAsc(ActivityIssue::getEndTime));
+    }
 }
