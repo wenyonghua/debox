@@ -5,11 +5,15 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.debox.reward.common.exception.BizException;
 import com.debox.reward.modules.auth.eth.EthereumPersonalSignVerifier;
+import com.debox.reward.modules.wallet.enums.WalletBizType;
 import com.debox.reward.modules.wallet.dto.WalletWithdrawalSubmitRequest;
 import com.debox.reward.modules.wallet.entity.WalletWithdrawal;
 import com.debox.reward.modules.wallet.enums.AssetCode;
 import com.debox.reward.modules.wallet.mapper.WalletWithdrawalMapper;
+import com.debox.reward.modules.wallet.service.WalletLedgerService;
 import com.debox.reward.modules.wallet.service.WalletWithdrawalRecordService;
+import com.debox.reward.modules.wallet.util.ChainAddressValidator;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,8 +21,11 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Service
+@RequiredArgsConstructor
 public class WalletWithdrawalRecordServiceImpl extends ServiceImpl<WalletWithdrawalMapper, WalletWithdrawal>
         implements WalletWithdrawalRecordService {
+
+    private final WalletLedgerService walletLedgerService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -32,10 +39,25 @@ public class WalletWithdrawalRecordServiceImpl extends ServiceImpl<WalletWithdra
         } catch (Exception e) {
             throw new BizException("不支持的资产类型");
         }
-        String to = EthereumPersonalSignVerifier.normalizeAddress(request.getToAddress());
-        if (!EthereumPersonalSignVerifier.looksLikeEvmAddress(to)) {
-            throw new BizException("提现地址格式无效（暂仅支持 EVM 0x 地址）");
+        String toRaw = request.getToAddress() == null ? "" : request.getToAddress().trim();
+        if (toRaw.isBlank()) {
+            throw new BizException("toAddress 必填");
         }
+        String to;
+        if (toRaw.startsWith("0x") || toRaw.startsWith("0X")) {
+            to = EthereumPersonalSignVerifier.normalizeAddress(toRaw);
+            if (!EthereumPersonalSignVerifier.looksLikeEvmAddress(to)) {
+                throw new BizException("提现地址格式无效（EVM 0x 地址）");
+            }
+        } else if (toRaw.startsWith("T")) {
+            if (!ChainAddressValidator.isValidTronBase58Address(toRaw)) {
+                throw new BizException("提现地址格式无效（TRC20 / TRON Base58Check）");
+            }
+            to = toRaw;
+        } else {
+            throw new BizException("提现地址格式无效（仅支持 EVM 0x / TRC20 T...）");
+        }
+
         LocalDateTime now = LocalDateTime.now();
         WalletWithdrawal row = new WalletWithdrawal();
         row.setBizNo("WDR-" + UUID.randomUUID().toString().replace("-", ""));
@@ -43,12 +65,18 @@ public class WalletWithdrawalRecordServiceImpl extends ServiceImpl<WalletWithdra
         row.setAssetCode(ac);
         row.setAmount(request.getAmount());
         row.setToAddress(to);
-        row.setStatus("PENDING");
+        row.setStatus("SUBMITTED");
         row.setExecutedBizNo(null);
         row.setFailureReason(null);
         row.setCreatedAt(now);
         row.setUpdatedAt(now);
         save(row);
+
+        // 提交即冻结余额：避免重复提现/并发超额
+        walletLedgerService.freeze(userId, ac, request.getAmount(),
+                "WDR-FREEZE-" + row.getBizNo(),
+                "提现冻结 " + row.getBizNo());
+
         return row;
     }
 

@@ -10,5 +10,6 @@ public enum WalletBizType {
     FUND_RELEASE,
     FREEZE,
     UNFREEZE,
+    WITHDRAWAL,
     ADJUST
 }
